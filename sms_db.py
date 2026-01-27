@@ -30,6 +30,18 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gps_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        latitude REAL,
+        longitude REAL,
+        altitude REAL,
+        speed REAL,
+        satellites INTEGER,
+        ts DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     con.commit()
     con.close()
 
@@ -77,6 +89,38 @@ def list_sms(limit=50):
     cur = con.cursor()
     rows = cur.execute(
         "SELECT * FROM sms ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    con.close()
+    return rows
+
+def save_gps_position(latitude, longitude, altitude=None, speed=None, satellites=None):
+    """Save GPS position to database"""
+    con = conn()
+    cur = con.cursor()
+    cur.execute(
+        "INSERT INTO gps_positions(latitude,longitude,altitude,speed,satellites) VALUES (?,?,?,?,?)",
+        (latitude, longitude, altitude, speed, satellites)
+    )
+    con.commit()
+    con.close()
+
+def get_latest_gps(limit=1):
+    """Get latest GPS positions"""
+    con = conn()
+    cur = con.cursor()
+    rows = cur.execute(
+        "SELECT * FROM gps_positions ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    con.close()
+    return rows
+
+def get_all_gps_positions(limit=1000):
+    """Get all GPS positions for mapping"""
+    con = conn()
+    cur = con.cursor()
+    rows = cur.execute(
+        "SELECT latitude, longitude, altitude, speed, satellites, ts FROM gps_positions ORDER BY id DESC LIMIT ?", 
+        (limit,)
     ).fetchall()
     con.close()
     return rows
