@@ -2,16 +2,11 @@ import streamlit as st
 import time
 import pandas as pd
 from sms_db import list_sms, queue_sms, init_db, get_latest_gps, get_all_gps_positions
-from gps_module import gps_reader
 
 st.set_page_config(layout="wide", page_title="OPi-ML307A Gateway")
 st.title("📡 OPi-ML307A Gateway")
 
 init_db()
-
-# Start GPS reader if not already started
-if not gps_reader.running:
-    gps_reader.start()
 
 # Sidebar for SMS
 with st.sidebar:
@@ -32,34 +27,48 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("🛰️ GPS Tracking")
     
-    # Get current GPS position
-    current_pos = gps_reader.get_position()
+    # Lấy vị trí GPS mới nhất từ database (do listener.py ghi vào)
+    latest = get_latest_gps(limit=1)
+    current_pos = None
+    if latest:
+        row = latest[0]
+        # gps_positions: id, latitude, longitude, altitude, speed, satellites, ts
+        _, lat, lon, alt, speed, sats, ts = row
+        if lat is not None and lon is not None:
+            current_pos = {
+                "latitude": lat,
+                "longitude": lon,
+                "altitude": alt,
+                "speed": speed,
+                "satellites": sats,
+                "timestamp": ts,
+            }
     
-    if current_pos['has_fix']:
+    if current_pos:
         st.success(f"✅ GPS Fix: {current_pos['satellites']} vệ tinh")
         
-        # Display current position info
+        # Thông tin vị trí hiện tại
         info_col1, info_col2 = st.columns(2)
         with info_col1:
             st.metric("Vĩ độ", f"{current_pos['latitude']:.6f}°")
             st.metric("Kinh độ", f"{current_pos['longitude']:.6f}°")
         with info_col2:
-            if current_pos['altitude']:
+            if current_pos['altitude'] is not None:
                 st.metric("Độ cao", f"{current_pos['altitude']:.1f} m")
-            if current_pos['speed']:
+            if current_pos['speed'] is not None:
                 st.metric("Tốc độ", f"{current_pos['speed']:.1f} km/h")
         
-        # Display map with current position
+        # Hiển thị bản đồ với vị trí hiện tại
         st.map(
             pd.DataFrame({
-                'lat': [current_pos['latitude']],
-                'lon': [current_pos['longitude']]
+                "lat": [current_pos["latitude"]],
+                "lon": [current_pos["longitude"]],
             }),
             zoom=15,
-            use_container_width=True
+            use_container_width=True,
         )
         
-        # Display GPS track history
+        # Lịch sử GPS
         st.subheader("📍 Lịch sử GPS")
         gps_history = get_all_gps_positions(limit=100)
         if gps_history:
