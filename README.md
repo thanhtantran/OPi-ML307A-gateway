@@ -12,6 +12,13 @@ Gateway SMS và GPS sử dụng chip ML307A trên Orange Pi
 
 ## Cài đặt phần cứng
 
+Cài đặt modem
+
+```bash
+sudo apt update
+sudo apt install usbutils modemmanager wvdial
+```
+
 Cài đặt udev rules cho ML307A:
 
 `sudo nano /etc/udev/rules.d/99-ml307a.rules`
