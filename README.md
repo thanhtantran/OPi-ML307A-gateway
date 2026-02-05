@@ -17,6 +17,7 @@ Cài đặt modem
 ```bash
 sudo apt update
 sudo apt install usbutils modemmanager wvdial
+sudo apt remove brltty
 ```
 
 Cài đặt udev rules cho ML307A:
