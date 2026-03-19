@@ -16,7 +16,11 @@ def init_db():
         direction TEXT,      -- IN / OUT
         number TEXT,
         text TEXT,
+<<<<<<< codex/remove-gps-features-from-code
         status TEXT,         -- QUEUED / PROCESSING / SENT / FAILED / RECEIVED / IMPORTED
+=======
+        status TEXT,         -- SENT / DELIVERED / FAILED / QUEUED
+>>>>>>> main
         ref INTEGER,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -29,13 +33,17 @@ def init_db():
         text TEXT,
         status TEXT DEFAULT 'QUEUE',  -- QUEUE / PROCESSING / SENT / FAILED
         error TEXT,
+<<<<<<< codex/remove-gps-features-from-code
         modem_sms_id INTEGER,
+=======
+>>>>>>> main
         ts DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
     cur.execute("PRAGMA table_info(outbox)")
+<<<<<<< codex/remove-gps-features-from-code
     outbox_columns = {row[1] for row in cur.fetchall()}
     if "error" not in outbox_columns:
         cur.execute("ALTER TABLE outbox ADD COLUMN error TEXT")
@@ -48,6 +56,13 @@ def init_db():
     sms_columns = {row[1] for row in cur.fetchall()}
     if "ref" not in sms_columns:
         cur.execute("ALTER TABLE sms ADD COLUMN ref INTEGER")
+=======
+    columns = {row[1] for row in cur.fetchall()}
+    if "error" not in columns:
+        cur.execute("ALTER TABLE outbox ADD COLUMN error TEXT")
+    if "updated_at" not in columns:
+        cur.execute("ALTER TABLE outbox ADD COLUMN updated_at DATETIME")
+>>>>>>> main
 
     con.commit()
     con.close()
@@ -64,6 +79,7 @@ def save_sms(direction, number, text, status="", ref=None):
     con.close()
 
 
+<<<<<<< codex/remove-gps-features-from-code
 def sms_ref_exists(direction, ref):
     con = conn()
     cur = con.cursor()
@@ -75,6 +91,8 @@ def sms_ref_exists(direction, ref):
     return row is not None
 
 
+=======
+>>>>>>> main
 def queue_sms(number, text):
     con = conn()
     cur = con.cursor()
@@ -102,12 +120,21 @@ def get_queued_sms():
     return rows
 
 
+<<<<<<< codex/remove-gps-features-from-code
 def mark_outbox(outbox_id, status, error=None, modem_sms_id=None):
     con = conn()
     cur = con.cursor()
     cur.execute(
         "UPDATE outbox SET status=?, error=?, modem_sms_id=COALESCE(?, modem_sms_id), updated_at=CURRENT_TIMESTAMP WHERE id=?",
         (status, error, modem_sms_id, outbox_id),
+=======
+def mark_outbox(outbox_id, status, error=None):
+    con = conn()
+    cur = con.cursor()
+    cur.execute(
+        "UPDATE outbox SET status=?, error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (status, error, outbox_id),
+>>>>>>> main
     )
     cur.execute(
         "UPDATE sms SET status=? WHERE ref=? AND direction='OUT'",
@@ -131,7 +158,11 @@ def list_outbox(limit=50):
     con = conn()
     cur = con.cursor()
     rows = cur.execute(
+<<<<<<< codex/remove-gps-features-from-code
         "SELECT id, number, text, status, error, modem_sms_id, ts, updated_at FROM outbox ORDER BY id DESC LIMIT ?",
+=======
+        "SELECT id, number, text, status, error, ts, updated_at FROM outbox ORDER BY id DESC LIMIT ?",
+>>>>>>> main
         (limit,),
     ).fetchall()
     con.close()
