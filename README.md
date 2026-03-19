@@ -1,13 +1,13 @@
 # OPi-ML307A-gateway
 
-Gateway SMS và GPS sử dụng chip ML307A trên Orange Pi
+Gateway SMS sử dụng chip ML307A trên Orange Pi
 
 ## Tính năng
 
-- ✅ Gửi/nhận SMS qua ML307A
-- ✅ Định vị GPS theo thời gian thực
-- ✅ Hiển thị GPS trên bản đồ Streamlit
-- ✅ Lưu trữ lịch sử GPS và SMS
+- ✅ Gửi SMS qua ModemManager (`mmcli`)
+- ✅ Đồng bộ SMS nhận được từ ModemManager vào SQLite
+- ✅ Giao diện Streamlit để đưa tin nhắn vào hàng đợi
+- ✅ Theo dõi trạng thái gửi: chờ gửi / đang gửi / thành công / lỗi
 - ✅ Webhook notification cho SMS đến
 
 ## Cài đặt phần cứng
@@ -36,31 +36,6 @@ ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2ecc", ATTR{idProduct}=="3012"
 SUBSYSTEM=="tty", KERNEL=="ttyUSB*", \
 ENV{DEVPATH}=="*/3-1:1.1/*", \
 SYMLINK+="ml307-at", MODE="0660", GROUP="dialout"
-
-# 3️⃣ GPS NMEA port (interface :1.2 → bInterfaceNumber 02)
-SUBSYSTEM=="tty", KERNEL=="ttyUSB*", \
-ENV{DEVPATH}=="*/3-1:1.2/*", \
-SYMLINK+="ml307-gps", MODE="0660", GROUP="dialout"
-```
-
-Reload và apply:
-
-```bash
-sudo udevadm control --reload
-sudo udevadm trigger --subsystem-match=tty
-```
-
-Hoặc reboot:
-```bash
-sudo reboot
-```
-
-Kiểm tra:
-```bash
-ls -l /dev/ml307*
-# Kết quả:
-# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-at -> ttyUSB1
-# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-gps -> ttyUSB4
 ```
 
 ## Cài đặt phần mềm
@@ -70,76 +45,94 @@ ls -l /dev/ml307*
 pip install -r requirements.txt
 ```
 
-2. Cấu hình (tùy chọn):
-Chỉnh sửa `config.py` nếu cần thay đổi:
-- Ports (mặc định: `/dev/ml307-at` và `/dev/ml307-gps`)
-- Baud rate (mặc định: 115200)
-- Webhook URL
-- GPS update interval
-
-3. Khởi động listener service:
+2. Bảo đảm ModemManager đang chạy:
 ```bash
-# Copy service file
+sudo systemctl enable ModemManager
+sudo systemctl restart ModemManager
+mmcli -L
+```
+
+3. Chỉnh sửa `config.py` nếu cần thay đổi:
+- `MODEM_ID` - modem index trong `mmcli -L`
+- `MODEM_POLL_INTERVAL` - chu kỳ đồng bộ gửi/nhận SMS
+- `DELETE_IMPORTED_SMS` - có xóa SMS received khỏi modem sau khi import hay không
+- `WEBHOOK_URL` - nơi nhận webhook cho SMS đến
+
+4. Khởi động listener service:
+```bash
 sudo cp ml307a-listener.service /etc/systemd/system/
-
-# Chỉnh sửa đường dẫn trong service file nếu cần
-sudo nano /etc/systemd/system/ml307a-listener.service
-
-# Enable và start service
 sudo systemctl enable ml307a-listener.service
-sudo systemctl start ml307a-listener.service
-
-# Kiểm tra status
+sudo systemctl restart ml307a-listener.service
 sudo systemctl status ml307a-listener.service
 ```
 
-4. Chạy Streamlit web interface:
+5. Chạy Streamlit web interface:
 ```bash
 streamlit run app.py
 ```
 
-Truy cập web interface tại: `http://localhost:8501`
-
 ## Cấu trúc mã nguồn
 
-- `config.py` - Cấu hình ports, baud rate, database
-- `listener.py` - Service chính xử lý SMS và GPS
-- `gps_module.py` - Module đọc dữ liệu GPS từ NMEA
-- `sms_db.py` - Database operations cho SMS và GPS
+- `config.py` - Cấu hình database và ModemManager/mmcli
+- `listener.py` - Đồng bộ outbox/inbox qua `mmcli`
+- `sms_db.py` - Database operations cho SMS và hàng đợi gửi
 - `app.py` - Streamlit web interface
 - `ml307a-listener.service` - Systemd service file
 
-## Sử dụng
+## Luồng SMS dùng trong mã nguồn
 
 ### Gửi SMS
-- Mở web interface Streamlit
-- Nhập số điện thoại và nội dung tin nhắn
-- Click "Gửi SMS"
-- Tin nhắn sẽ được thêm vào hàng đợi và gửi tự động
+Mã nguồn listener dùng đúng luồng ModemManager được khuyến nghị:
 
-### Xem GPS
-- Web interface tự động hiển thị vị trí GPS hiện tại
-- Bản đồ hiển thị vị trí real-time
-- Lịch sử GPS được lưu và hiển thị trên bản đồ
+```bash
+sudo mmcli -m 0 --messaging-create-sms="text='Xin chào từ ML307A',number='+849xxxxxxxx'"
+sudo mmcli -s <sms_id> --send
+```
 
-### Webhook
-Khi có SMS đến, hệ thống sẽ POST đến `WEBHOOK_URL` với format:
-```json
-{
-  "from": "+84901234567",
-  "text": "Nội dung tin nhắn"
-}
+Trong source:
+- `queue_sms()` ghi yêu cầu gửi vào SQLite
+- `listener.py` gọi `mmcli -m <MODEM_ID> --messaging-create-sms=...`
+- lấy `SMS/<id>` vừa tạo
+- gọi tiếp `mmcli -s <id> --send`
+- cập nhật trạng thái `SENT` hoặc `FAILED` cùng phản hồi mmcli
+
+### Nhận & đọc SMS
+Listener đồng bộ inbox bằng:
+
+```bash
+sudo mmcli -m 0 --messaging-list-sms
+sudo mmcli -s <sms_id>
+```
+
+Chỉ các SMS ở trạng thái `received` mới được import vào SQLite để tránh nhập lại các SMS do chính hệ thống vừa tạo để gửi.
+
+### Xóa SMS
+Nếu muốn tự động xóa SMS đã import khỏi modem, đặt:
+
+```python
+DELETE_IMPORTED_SMS = True
+```
+
+Khi đó listener sẽ gọi:
+
+```bash
+sudo mmcli -s <sms_id> --delete
 ```
 
 ## Database
 
-SQLite database (`sms.db`) chứa 3 bảng:
-- `sms` - Lịch sử SMS đã gửi/nhận
-- `outbox` - Hàng đợi SMS cần gửi
-- `gps_positions` - Lịch sử vị trí GPS
+SQLite database (`sms.db`) chứa 2 bảng chính:
+- `sms` - lịch sử SMS gửi/nhận
+- `outbox` - hàng đợi gửi, phản hồi lỗi và `modem_sms_id`
 
 ## Troubleshooting
 
-- **Không thấy GPS fix**: Đảm bảo thiết bị ở nơi có tín hiệu vệ tinh tốt, chờ vài phút để GPS khởi động
-- **Lỗi serial port**: Kiểm tra quyền truy cập (`sudo usermod -aG dialout $USER` và logout/login lại)
-- **SMS không gửi được**: Kiểm tra SIM card và tín hiệu mạng
+- **Không gửi được SMS**:
+  - chạy thử tay: `mmcli -m 0 --messaging-create-sms=...` rồi `mmcli -s <id> --send`
+  - kiểm tra modem có xuất hiện trong `mmcli -L` hay không
+  - kiểm tra service `ModemManager` đang chạy
+  - xem cột lỗi trong giao diện web hoặc journal của `ml307a-listener.service`
+- **Không thấy SMS đến**:
+  - kiểm tra `mmcli -m 0 --messaging-list-sms`
+  - bảo đảm `MODEM_ID` đúng modem đang dùng
+  - nếu muốn dọn sạch hộp thư sau khi import, bật `DELETE_IMPORTED_SMS = True`
