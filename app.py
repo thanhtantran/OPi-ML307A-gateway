@@ -4,7 +4,7 @@ import time
 import streamlit as st
 
 from config import DELETE_IMPORTED_SMS, MMCLI_BIN, MODEM_ID
-from sms_db import delete_sms_by_id, init_db, list_outbox, list_sms, queue_sms
+from sms_db import delete_sms_by_id, init_db, list_outbox, list_sms, queue_sms, reset_outbox_to_queue
 
 st.set_page_config(layout="wide", page_title="OPi-ML307A SMS Gateway")
 st.title("📡 OPi-ML307A SMS Gateway")
@@ -57,6 +57,10 @@ with col1:
                     st.caption(f"ModemManager SMS ID: {modem_sms_id}")
                 if error:
                     st.caption(f"Phản hồi mmcli/modem: {error}")
+                if status in ("FAILED", "QUEUE"):
+                    if st.button("📤 Gửi ngay", key=f"resend_{outbox_id}"):
+                        reset_outbox_to_queue(outbox_id)
+                        st.rerun()
                 st.divider()
     else:
         st.info("Chưa có tin nhắn nào trong hàng đợi")

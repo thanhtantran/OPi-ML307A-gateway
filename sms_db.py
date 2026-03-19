@@ -135,6 +135,21 @@ def delete_sms_by_id(sms_id: int):
     con.close()
 
 
+def reset_outbox_to_queue(outbox_id: int):
+    con = conn()
+    cur = con.cursor()
+    cur.execute(
+        "UPDATE outbox SET status='QUEUE', error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (outbox_id,)
+    )
+    cur.execute(
+        "UPDATE sms SET status='QUEUED' WHERE ref=? AND direction='OUT'",
+        (outbox_id,)
+    )
+    con.commit()
+    con.close()
+
+
 def list_outbox(limit=50):
     con = conn()
     cur = con.cursor()

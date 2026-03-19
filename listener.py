@@ -25,7 +25,7 @@ class ModemManagerClient:
         self.runner = runner or subprocess.run
 
     def _run(self, *args: str) -> str:
-        cmd = [MMCLI_BIN, *args]
+        cmd = ["sudo", MMCLI_BIN, *args]
         try:
             result = self.runner(cmd, capture_output=True, text=True)
         except FileNotFoundError as exc:
