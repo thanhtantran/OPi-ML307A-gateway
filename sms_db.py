@@ -17,7 +17,6 @@ def init_db():
         number TEXT,
         text TEXT,
         status TEXT,
-        status TEXT,         
         ref INTEGER,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -30,7 +29,6 @@ def init_db():
         text TEXT,
         status TEXT DEFAULT 'QUEUE',
         error TEXT,
-        modem_sms_id INTEGER,
         modem_sms_id INTEGER,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -75,6 +73,7 @@ def sms_ref_exists(direction, ref):
     ).fetchone()
     con.close()
     return row is not None
+
 
 def queue_sms(number, text):
     con = conn()
@@ -121,34 +120,17 @@ def mark_outbox(outbox_id, status, error=None, modem_sms_id=None):
 def list_sms(limit=50):
     con = conn()
     cur = con.cursor()
-def mark_outbox(outbox_id, status, error=None, modem_sms_id=None):
-    con = conn()
-    cur = con.cursor()
-    cur.execute(
-        "UPDATE outbox SET status=?, error=?, modem_sms_id=COALESCE(?, modem_sms_id), updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (status, error, modem_sms_id, outbox_id),
-    )
-    cur.execute(
-        "UPDATE sms SET status=? WHERE ref=? AND direction='OUT'",
-        (status, outbox_id),
-    )
-    con.commit()
-    con.close()
-
-def list_sms(limit=50):
-    con = conn()
-    cur = con.cursor()
     rows = cur.execute(
         "SELECT * FROM sms ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     con.close()
     return rows
 
+
 def list_outbox(limit=50):
     con = conn()
     cur = con.cursor()
     rows = cur.execute(
-        "SELECT id, number, text, status, error, modem_sms_id, ts, updated_at FROM outbox ORDER BY id DESC LIMIT ?",
         "SELECT id, number, text, status, error, modem_sms_id, ts, updated_at FROM outbox ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
