@@ -1,8 +1,10 @@
 import sqlite3
 from config import DB
 
+
 def conn():
     return sqlite3.connect(DB, check_same_thread=False)
+
 
 def init_db():
     con = conn()
@@ -14,7 +16,7 @@ def init_db():
         direction TEXT,      -- IN / OUT
         number TEXT,
         text TEXT,
-        status TEXT,         -- SENT / DELIVERED / FAILED
+        status TEXT,         -- SENT / DELIVERED / FAILED / QUEUED
         ref INTEGER,
         ts DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -25,45 +27,51 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         number TEXT,
         text TEXT,
-        status TEXT DEFAULT 'QUEUE',  -- QUEUE / SENT / FAILED
-        ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        status TEXT DEFAULT 'QUEUE',  -- QUEUE / PROCESSING / SENT / FAILED
+        error TEXT,
+        ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS gps_positions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        latitude REAL,
-        longitude REAL,
-        altitude REAL,
-        speed REAL,
-        satellites INTEGER,
-        ts DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
+    cur.execute("PRAGMA table_info(outbox)")
+    columns = {row[1] for row in cur.fetchall()}
+    if "error" not in columns:
+        cur.execute("ALTER TABLE outbox ADD COLUMN error TEXT")
+    if "updated_at" not in columns:
+        cur.execute("ALTER TABLE outbox ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
 
     con.commit()
     con.close()
+
 
 def save_sms(direction, number, text, status="", ref=None):
     con = conn()
     cur = con.cursor()
     cur.execute(
         "INSERT INTO sms(direction,number,text,status,ref) VALUES (?,?,?,?,?)",
-        (direction, number, text, status, ref)
+        (direction, number, text, status, ref),
     )
     con.commit()
     con.close()
+
 
 def queue_sms(number, text):
     con = conn()
     cur = con.cursor()
     cur.execute(
-        "INSERT INTO outbox(number,text) VALUES (?,?)",
-        (number, text)
+        "INSERT INTO outbox(number,text,status,updated_at) VALUES (?,?,'QUEUE',CURRENT_TIMESTAMP)",
+        (number.strip(), text.strip()),
+    )
+    outbox_id = cur.lastrowid
+    cur.execute(
+        "INSERT INTO sms(direction,number,text,status,ref) VALUES (?,?,?,?,?)",
+        ("OUT", number.strip(), text.strip(), "QUEUED", outbox_id),
     )
     con.commit()
     con.close()
+    return outbox_id
+
 
 def get_queued_sms():
     con = conn()
@@ -74,15 +82,21 @@ def get_queued_sms():
     con.close()
     return rows
 
-def mark_outbox(id, status):
+
+def mark_outbox(outbox_id, status, error=None):
     con = conn()
     cur = con.cursor()
     cur.execute(
-        "UPDATE outbox SET status=? WHERE id=?",
-        (status, id)
+        "UPDATE outbox SET status=?, error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (status, error, outbox_id),
+    )
+    cur.execute(
+        "UPDATE sms SET status=? WHERE ref=? AND direction='OUT'",
+        (status, outbox_id),
     )
     con.commit()
     con.close()
+
 
 def list_sms(limit=50):
     con = conn()
@@ -93,34 +107,13 @@ def list_sms(limit=50):
     con.close()
     return rows
 
-def save_gps_position(latitude, longitude, altitude=None, speed=None, satellites=None):
-    """Save GPS position to database"""
-    con = conn()
-    cur = con.cursor()
-    cur.execute(
-        "INSERT INTO gps_positions(latitude,longitude,altitude,speed,satellites) VALUES (?,?,?,?,?)",
-        (latitude, longitude, altitude, speed, satellites)
-    )
-    con.commit()
-    con.close()
 
-def get_latest_gps(limit=1):
-    """Get latest GPS positions"""
+def list_outbox(limit=50):
     con = conn()
     cur = con.cursor()
     rows = cur.execute(
-        "SELECT * FROM gps_positions ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    con.close()
-    return rows
-
-def get_all_gps_positions(limit=1000):
-    """Get all GPS positions for mapping"""
-    con = conn()
-    cur = con.cursor()
-    rows = cur.execute(
-        "SELECT latitude, longitude, altitude, speed, satellites, ts FROM gps_positions ORDER BY id DESC LIMIT ?", 
-        (limit,)
+        "SELECT id, number, text, status, error, ts, updated_at FROM outbox ORDER BY id DESC LIMIT ?",
+        (limit,),
     ).fetchall()
     con.close()
     return rows

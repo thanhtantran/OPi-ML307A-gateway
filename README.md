@@ -1,13 +1,13 @@
 # OPi-ML307A-gateway
 
-Gateway SMS và GPS sử dụng chip ML307A trên Orange Pi
+Gateway SMS sử dụng chip ML307A trên Orange Pi
 
 ## Tính năng
 
 - ✅ Gửi/nhận SMS qua ML307A
-- ✅ Định vị GPS theo thời gian thực
-- ✅ Hiển thị GPS trên bản đồ Streamlit
-- ✅ Lưu trữ lịch sử GPS và SMS
+- ✅ Giao diện Streamlit để đưa tin nhắn vào hàng đợi
+- ✅ Theo dõi trạng thái gửi: chờ gửi / đang gửi / thành công / lỗi
+- ✅ Lưu lịch sử SMS gửi/nhận vào SQLite
 - ✅ Webhook notification cho SMS đến
 
 ## Cài đặt phần cứng
@@ -36,11 +36,6 @@ ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2ecc", ATTR{idProduct}=="3012"
 SUBSYSTEM=="tty", KERNEL=="ttyUSB*", \
 ENV{DEVPATH}=="*/3-1:1.1/*", \
 SYMLINK+="ml307-at", MODE="0660", GROUP="dialout"
-
-# 3️⃣ GPS NMEA port (interface :1.2 → bInterfaceNumber 02)
-SUBSYSTEM=="tty", KERNEL=="ttyUSB*", \
-ENV{DEVPATH}=="*/3-1:1.2/*", \
-SYMLINK+="ml307-gps", MODE="0660", GROUP="dialout"
 ```
 
 Reload và apply:
@@ -60,7 +55,6 @@ Kiểm tra:
 ls -l /dev/ml307*
 # Kết quả:
 # lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-at -> ttyUSB1
-# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-gps -> ttyUSB4
 ```
 
 ## Cài đặt phần mềm
@@ -72,10 +66,10 @@ pip install -r requirements.txt
 
 2. Cấu hình (tùy chọn):
 Chỉnh sửa `config.py` nếu cần thay đổi:
-- Ports (mặc định: `/dev/ml307-at` và `/dev/ml307-gps`)
+- Port AT (mặc định: `/dev/ml307-at`)
 - Baud rate (mặc định: 115200)
 - Webhook URL
-- GPS update interval
+- Timeout gửi SMS
 
 3. Khởi động listener service:
 ```bash
@@ -102,10 +96,9 @@ Truy cập web interface tại: `http://localhost:8501`
 
 ## Cấu trúc mã nguồn
 
-- `config.py` - Cấu hình ports, baud rate, database
-- `listener.py` - Service chính xử lý SMS và GPS
-- `gps_module.py` - Module đọc dữ liệu GPS từ NMEA
-- `sms_db.py` - Database operations cho SMS và GPS
+- `config.py` - Cấu hình serial port, timeout, database
+- `listener.py` - Service chính xử lý SMS
+- `sms_db.py` - Database operations cho SMS và hàng đợi gửi
 - `app.py` - Streamlit web interface
 - `ml307a-listener.service` - Systemd service file
 
@@ -115,12 +108,7 @@ Truy cập web interface tại: `http://localhost:8501`
 - Mở web interface Streamlit
 - Nhập số điện thoại và nội dung tin nhắn
 - Click "Gửi SMS"
-- Tin nhắn sẽ được thêm vào hàng đợi và gửi tự động
-
-### Xem GPS
-- Web interface tự động hiển thị vị trí GPS hiện tại
-- Bản đồ hiển thị vị trí real-time
-- Lịch sử GPS được lưu và hiển thị trên bản đồ
+- Kiểm tra tab hàng đợi để xem trạng thái modem trả về
 
 ### Webhook
 Khi có SMS đến, hệ thống sẽ POST đến `WEBHOOK_URL` với format:
@@ -133,13 +121,14 @@ Khi có SMS đến, hệ thống sẽ POST đến `WEBHOOK_URL` với format:
 
 ## Database
 
-SQLite database (`sms.db`) chứa 3 bảng:
+SQLite database (`sms.db`) chứa 2 bảng chính được dùng bởi ứng dụng:
 - `sms` - Lịch sử SMS đã gửi/nhận
-- `outbox` - Hàng đợi SMS cần gửi
-- `gps_positions` - Lịch sử vị trí GPS
+- `outbox` - Hàng đợi SMS cần gửi và lỗi modem gần nhất
 
 ## Troubleshooting
 
-- **Không thấy GPS fix**: Đảm bảo thiết bị ở nơi có tín hiệu vệ tinh tốt, chờ vài phút để GPS khởi động
 - **Lỗi serial port**: Kiểm tra quyền truy cập (`sudo usermod -aG dialout $USER` và logout/login lại)
-- **SMS không gửi được**: Kiểm tra SIM card và tín hiệu mạng
+- **SMS không gửi được**:
+  - Kiểm tra SIM card, tín hiệu mạng và trạng thái đăng ký mạng (`AT+CREG?`, `AT+CSQ`)
+  - Mở giao diện web để xem lỗi modem được lưu trong hàng đợi
+  - Nếu nội dung có dấu tiếng Việt, thử gửi không dấu trước để xác nhận modem đang hoạt động ở chế độ text mode

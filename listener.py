@@ -1,193 +1,206 @@
-import serial
-import time
-import requests
 import signal
 import sys
-from config import AT_PORT, BAUD, WEBHOOK_URL, GPS_UPDATE_INTERVAL
-from sms_db import (
-    init_db, save_sms,
-    get_queued_sms, mark_outbox, save_gps_position
-)
-from gps_module import gps_reader
+import time
 
-def send_at(ser, cmd, wait=0.5):
-    """Send AT command and return response"""
-    try:
-        ser.write((cmd + "\r").encode())
-        time.sleep(wait)
-        response = ser.read_all().decode(errors="ignore")
-        return response
-    except serial.SerialException as e:
-        print(f"⚠️ Serial error sending AT command: {e}")
-        return ""
+import requests
+import serial
+
+from config import (
+    AT_PORT,
+    BAUD,
+    SERIAL_POLL_INTERVAL,
+    SMS_PROMPT_TIMEOUT,
+    SMS_SEND_TIMEOUT,
+    WEBHOOK_URL,
+)
+from sms_db import get_queued_sms, init_db, mark_outbox, save_sms
+
+
+FINAL_RESPONSE_TOKENS = ("\r\nOK\r\n", "\r\nERROR\r\n", "+CMS ERROR:", "+CME ERROR:")
+
+
+def normalize_number(number):
+    """Keep only valid phone-number characters for AT+CMGS."""
+    cleaned = (number or "").strip().replace(" ", "")
+    allowed = "+0123456789"
+    cleaned = "".join(ch for ch in cleaned if ch in allowed)
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    return cleaned
+
+
+def read_until(ser, expected=None, timeout=5, initial_wait=0.2):
+    """Read serial data until one of the expected tokens is found or timeout expires."""
+    buffer = ""
+    expected = tuple(expected or ())
+    deadline = time.time() + timeout
+
+    if initial_wait > 0:
+        time.sleep(initial_wait)
+
+    while time.time() < deadline:
+        waiting = getattr(ser, "in_waiting", 0)
+        chunk = ser.read(waiting or 1).decode(errors="ignore")
+        if chunk:
+            buffer += chunk
+            if expected and any(token in buffer for token in expected):
+                break
+        else:
+            time.sleep(0.1)
+
+    return buffer
+
+
+def send_at(ser, cmd, timeout=5, expected=None):
+    """Send AT command and return response."""
+    expected_tokens = expected or FINAL_RESPONSE_TOKENS
+    ser.reset_input_buffer()
+    ser.write((cmd + "\r").encode())
+    ser.flush()
+    return read_until(ser, expected=expected_tokens, timeout=timeout)
+
 
 def send_sms(ser, number, text):
-    """Send SMS message"""
-    try:
-        # Set text mode
-        send_at(ser, "AT+CMGF=1", wait=0.5)
-        
-        # Send SMS command
-        ser.write(f'AT+CMGS="{number}"\r'.encode())
-        time.sleep(0.3)
-        
-        # Send message content and Ctrl+Z (0x1A)
-        ser.write(text.encode() + b"\x1A")
-        time.sleep(3)
-        
-        response = ser.read_all().decode(errors="ignore")
-        return response
-    except serial.SerialException as e:
-        print(f"⚠️ Serial error sending SMS: {e}")
-        return "ERROR"
+    """Send SMS message and return success flag + modem response."""
+    normalized_number = normalize_number(number)
+    body = (text or "").strip()
+
+    if not normalized_number:
+        return False, "Invalid phone number"
+    if not body:
+        return False, "Message body is empty"
+
+    send_at(ser, "AT+CMGF=1", timeout=3)
+    send_at(ser, 'AT+CSCS="IRA"', timeout=3)
+
+    ser.reset_input_buffer()
+    ser.write(f'AT+CMGS="{normalized_number}"\r'.encode())
+    ser.flush()
+
+    prompt_response = read_until(ser, expected=(">", "ERROR", "+CMS ERROR:", "+CME ERROR:"), timeout=SMS_PROMPT_TIMEOUT)
+    if ">" not in prompt_response:
+        return False, prompt_response or "No prompt received for AT+CMGS"
+
+    ser.write(body.encode("utf-8") + b"\x1A")
+    ser.flush()
+
+    response = read_until(ser, expected=FINAL_RESPONSE_TOKENS, timeout=SMS_SEND_TIMEOUT)
+    success = "+CMGS:" in response and "OK" in response and "ERROR" not in response
+    return success, response
+
 
 def init_modem(ser):
-    """Initialize modem with AT commands"""
-    try:
-        # Test connection
-        resp = send_at(ser, "AT", wait=1)
-        if "OK" not in resp:
-            raise Exception("Modem not responding")
-        
-        # Set SMS text mode
-        send_at(ser, "AT+CMGF=1", wait=0.5)
-        
-        # Set character set
-        send_at(ser, 'AT+CSCS="GSM"', wait=0.5)
-        
-        # Configure SMS notification
-        # AT+CNMI=2,1,0,2,1
-        #            │ │ │ │ └ delivery report
-        #            │ │ │ └ realtime SMS
-        send_at(ser, "AT+CNMI=2,1,0,2,1", wait=0.5)
-        
-        # Enable GPS (if supported via AT commands)
-        send_at(ser, "AT+CGNSPWR=1", wait=0.5)  # Power on GPS
-        send_at(ser, "AT+CGNSTST=1", wait=0.5)  # Start GPS session
-        
-        print("✅ Modem initialized")
-        return True
-    except Exception as e:
-        print(f"❌ Modem initialization failed: {e}")
-        return False
+    """Initialize modem with AT commands required for SMS."""
+    checks = [
+        ("AT", 3),
+        ("ATE0", 3),
+        ("AT+CMGF=1", 3),
+        ('AT+CSCS="IRA"', 3),
+        ("AT+CPMS=\"ME\",\"ME\",\"ME\"", 5),
+        ("AT+CNMI=2,1,0,2,1", 5),
+    ]
 
-def handle_delivery(line):
-    """Handle SMS delivery report"""
-    # +CDS: <length><CR><LF>PDU...
-    save_sms("OUT", "", "", "DELIVERED")
-    print("📬 Delivery report")
+    for cmd, timeout in checks:
+        response = send_at(ser, cmd, timeout=timeout)
+        if "OK" not in response:
+            raise RuntimeError(f"Command failed: {cmd} -> {response.strip()}")
+
+    print("✅ Modem initialized for SMS")
+    return True
+
+
+def handle_delivery(_line):
+    """Handle SMS delivery report."""
+    print("📬 Delivery report received")
+
+
+def handle_incoming_sms(ser, header_line):
+    text = ser.readline().decode(errors="ignore").strip()
+    parts = [part.strip().strip('"') for part in header_line.split(",")]
+    number = parts[1] if len(parts) > 1 else "Unknown"
+
+    print(f"📩 SMS from {number}: {text}")
+    save_sms("IN", number, text)
+
+    try:
+        requests.post(WEBHOOK_URL, json={"from": number, "text": text}, timeout=2)
+    except Exception as exc:
+        print(f"⚠️ Webhook error: {exc}")
+
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals gracefully"""
+    """Handle shutdown signals gracefully."""
     print("\n🛑 Shutting down...")
-    gps_reader.stop()
     sys.exit(0)
 
+
 def main():
-    """Main listener loop"""
-    # Register signal handlers
+    """Main listener loop."""
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Initialize database
+
     init_db()
-    
-    # Start GPS reader
-    gps_reader.start()
-    
-    # Open serial port for AT commands
-    ser = None
+
     try:
         ser = serial.Serial(AT_PORT, BAUD, timeout=1)
         print(f"✅ AT port opened: {AT_PORT}")
-    except serial.SerialException as e:
-        print(f"❌ Failed to open AT port {AT_PORT}: {e}")
+    except serial.SerialException as exc:
+        print(f"❌ Failed to open AT port {AT_PORT}: {exc}")
         print("   Make sure the device is connected and permissions are correct")
-        gps_reader.stop()
         sys.exit(1)
-    
-    # Initialize modem
-    if not init_modem(ser):
-        print("❌ Failed to initialize modem")
+
+    try:
+        init_modem(ser)
+    except Exception as exc:
+        print(f"❌ Failed to initialize modem: {exc}")
         ser.close()
-        gps_reader.stop()
         sys.exit(1)
 
     print("📡 Listener running")
-    
-    last_gps_save = 0
-    
+
     try:
         while True:
-            # ===== OUTBOX =====
             try:
-                for id, number, text in get_queued_sms():
+                for outbox_id, number, text in get_queued_sms():
                     print(f"📤 Sending SMS to {number}")
-                    resp = send_sms(ser, number, text)
+                    mark_outbox(outbox_id, "PROCESSING")
+                    success, response = send_sms(ser, number, text)
 
-                    if "OK" in resp:
-                        mark_outbox(id, "SENT")
-                        save_sms("OUT", number, text, "SENT")
-                        print(f"✅ SMS sent successfully")
+                    if success:
+                        mark_outbox(outbox_id, "SENT")
+                        print("✅ SMS sent successfully")
                     else:
-                        mark_outbox(id, "FAILED")
-                        save_sms("OUT", number, text, "FAILED")
-                        print(f"❌ SMS send failed: {resp[:100]}")
-            except Exception as e:
-                print(f"⚠️ Error processing outbox: {e}")
+                        error_message = (response or "Unknown modem error").strip().replace("\n", " ")[:200]
+                        mark_outbox(outbox_id, "FAILED", error_message)
+                        print(f"❌ SMS send failed: {error_message}")
+            except Exception as exc:
+                print(f"⚠️ Error processing outbox: {exc}")
 
-            # ===== INCOMING SMS =====
             try:
                 line = ser.readline().decode(errors="ignore").strip()
+                if not line:
+                    time.sleep(SERIAL_POLL_INTERVAL)
+                    continue
 
                 if line.startswith("+CMT:"):
-                    header = line
-                    text = ser.readline().decode(errors="ignore").strip()
-                    number = header.split(",")[1].replace('"', '')
-
-                    print(f"📩 SMS from {number}: {text}")
-                    save_sms("IN", number, text)
-
-                    # Send webhook notification
-                    try:
-                        requests.post(
-                            WEBHOOK_URL,
-                            json={"from": number, "text": text},
-                            timeout=2
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Webhook error: {e}")
-
+                    handle_incoming_sms(ser, line)
                 elif line.startswith("+CDS"):
                     handle_delivery(line)
-            except serial.SerialException as e:
-                print(f"⚠️ Serial read error: {e}")
+            except serial.SerialException as exc:
+                print(f"⚠️ Serial read error: {exc}")
                 time.sleep(1)
-            except Exception as e:
-                print(f"⚠️ Error processing incoming SMS: {e}")
+            except Exception as exc:
+                print(f"⚠️ Error processing incoming SMS: {exc}")
 
-            # ===== GPS POSITION SAVE =====
-            # Save GPS position periodically
-            current_time = time.time()
-            if current_time - last_gps_save >= GPS_UPDATE_INTERVAL:
-                if gps_reader.has_fix():
-                    pos = gps_reader.get_position()
-                    save_gps_position(pos['latitude'], pos['longitude'], 
-                                     pos['altitude'], pos['speed'], 
-                                     pos['satellites'])
-                    last_gps_save = current_time
-
-            time.sleep(0.2)
-            
+            time.sleep(SERIAL_POLL_INTERVAL)
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+    except Exception as exc:
+        print(f"❌ Fatal error: {exc}")
     finally:
-        if ser:
-            ser.close()
-        gps_reader.stop()
+        ser.close()
         print("👋 Listener stopped")
+
 
 if __name__ == "__main__":
     main()
