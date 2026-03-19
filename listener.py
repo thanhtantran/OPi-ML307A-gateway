@@ -1,193 +1,230 @@
-import serial
-import time
-import requests
+import re
 import signal
+import subprocess
 import sys
-from config import AT_PORT, BAUD, WEBHOOK_URL, GPS_UPDATE_INTERVAL
-from sms_db import (
-    init_db, save_sms,
-    get_queued_sms, mark_outbox, save_gps_position
-)
-from gps_module import gps_reader
+import time
+from typing import Callable, Dict, List, Optional
 
-def send_at(ser, cmd, wait=0.5):
-    """Send AT command and return response"""
-    try:
-        ser.write((cmd + "\r").encode())
-        time.sleep(wait)
-        response = ser.read_all().decode(errors="ignore")
-        return response
-    except serial.SerialException as e:
-        print(f"⚠️ Serial error sending AT command: {e}")
-        return ""
+import requests
 
-def send_sms(ser, number, text):
-    """Send SMS message"""
-    try:
-        # Set text mode
-        send_at(ser, "AT+CMGF=1", wait=0.5)
-        
-        # Send SMS command
-        ser.write(f'AT+CMGS="{number}"\r'.encode())
-        time.sleep(0.3)
-        
-        # Send message content and Ctrl+Z (0x1A)
-        ser.write(text.encode() + b"\x1A")
-        time.sleep(3)
-        
-        response = ser.read_all().decode(errors="ignore")
-        return response
-    except serial.SerialException as e:
-        print(f"⚠️ Serial error sending SMS: {e}")
-        return "ERROR"
+from config import DELETE_IMPORTED_SMS, MMCLI_BIN, MODEM_ID, MODEM_POLL_INTERVAL, WEBHOOK_URL
+from sms_db import get_queued_sms, init_db, mark_outbox, save_sms, sms_ref_exists
 
-def init_modem(ser):
-    """Initialize modem with AT commands"""
-    try:
-        # Test connection
-        resp = send_at(ser, "AT", wait=1)
-        if "OK" not in resp:
-            raise Exception("Modem not responding")
-        
-        # Set SMS text mode
-        send_at(ser, "AT+CMGF=1", wait=0.5)
-        
-        # Set character set
-        send_at(ser, 'AT+CSCS="GSM"', wait=0.5)
-        
-        # Configure SMS notification
-        # AT+CNMI=2,1,0,2,1
-        #            │ │ │ │ └ delivery report
-        #            │ │ │ └ realtime SMS
-        send_at(ser, "AT+CNMI=2,1,0,2,1", wait=0.5)
-        
-        # Enable GPS (if supported via AT commands)
-        send_at(ser, "AT+CGNSPWR=1", wait=0.5)  # Power on GPS
-        send_at(ser, "AT+CGNSTST=1", wait=0.5)  # Start GPS session
-        
-        print("✅ Modem initialized")
-        return True
-    except Exception as e:
-        print(f"❌ Modem initialization failed: {e}")
-        return False
 
-def handle_delivery(line):
-    """Handle SMS delivery report"""
-    # +CDS: <length><CR><LF>PDU...
-    save_sms("OUT", "", "", "DELIVERED")
-    print("📬 Delivery report")
+SMS_PATH_RE = re.compile(r"/org/freedesktop/ModemManager1/SMS/(\d+)")
+FIELD_RE = re.compile(r"^\s*(?P<key>[A-Za-z ]+?)\s*\|\s*(?P<value>.*)$")
+CONTINUATION_RE = re.compile(r"^\s*\|\s*(?P<value>.*)$")
+
+
+class MmcliError(RuntimeError):
+    pass
+
+
+class ModemManagerClient:
+    def __init__(self, runner: Optional[Callable[..., subprocess.CompletedProcess]] = None):
+        self.runner = runner or subprocess.run
+
+    def _run(self, *args: str) -> str:
+        cmd = [MMCLI_BIN, *args]
+        try:
+            result = self.runner(cmd, capture_output=True, text=True)
+        except FileNotFoundError as exc:
+            raise MmcliError(f"Không tìm thấy lệnh {MMCLI_BIN}: {exc}") from exc
+        if result.returncode != 0:
+            raise MmcliError((result.stderr or result.stdout or "mmcli failed").strip())
+        return result.stdout.strip()
+
+    @staticmethod
+    def _escape_value(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    @staticmethod
+    def _extract_sms_id(text: str) -> int:
+        match = SMS_PATH_RE.search(text)
+        if not match:
+            raise MmcliError(f"Không tìm thấy SMS ID trong phản hồi: {text}")
+        return int(match.group(1))
+
+    @staticmethod
+    def parse_sms_list(output: str) -> List[Dict[str, str]]:
+        sms_entries: List[Dict[str, str]] = []
+        for line in output.splitlines():
+            match = re.search(r"/SMS/(\d+) \(([^)]+)\)", line)
+            if match:
+                sms_entries.append({"id": int(match.group(1)), "state": match.group(2).strip()})
+        return sms_entries
+
+    @staticmethod
+    def parse_sms_details(output: str) -> Dict[str, str]:
+        details: Dict[str, str] = {}
+        current_section = None
+        multiline_key = None
+
+        for raw_line in output.splitlines():
+            line = raw_line.rstrip()
+            field_match = FIELD_RE.match(line)
+            if field_match:
+                current_section = field_match.group("key").strip().lower().replace(" ", "_")
+                value = field_match.group("value").strip()
+            else:
+                continuation_match = CONTINUATION_RE.match(line)
+                if not continuation_match or current_section is None:
+                    continue
+                value = continuation_match.group("value").strip()
+
+            if not value:
+                continue
+
+            if ":" in value:
+                subkey, subvalue = value.split(":", 1)
+                multiline_key = subkey.strip().lower().replace(" ", "_")
+                details[multiline_key] = subvalue.strip()
+            elif multiline_key:
+                details[multiline_key] = f"{details[multiline_key]}\n{value}".strip()
+
+            if current_section and current_section not in details:
+                details[current_section] = value
+
+        return details
+
+    def modem_info(self) -> str:
+        return self._run("-m", MODEM_ID)
+
+    def create_sms(self, number: str, text: str) -> int:
+        payload = f'--messaging-create-sms=text="{self._escape_value(text)}",number="{self._escape_value(number)}"'
+        output = self._run("-m", MODEM_ID, payload)
+        return self._extract_sms_id(output)
+
+    def send_sms(self, sms_id: int) -> str:
+        return self._run("-s", str(sms_id), "--send")
+
+    def list_sms(self) -> List[Dict[str, str]]:
+        return self.parse_sms_list(self._run("-m", MODEM_ID, "--messaging-list-sms"))
+
+    def get_sms(self, sms_id: int) -> Dict[str, str]:
+        details = self.parse_sms_details(self._run("-s", str(sms_id)))
+        details["id"] = sms_id
+        return details
+
+    def delete_sms(self, sms_id: int) -> str:
+        return self._run("-s", str(sms_id), "--delete")
+
+
+def normalize_number(number: str) -> str:
+    cleaned = (number or "").strip().replace(" ", "")
+    allowed = "+0123456789"
+    cleaned = "".join(ch for ch in cleaned if ch in allowed)
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    return cleaned
+
+
+def send_outbox_messages(client: ModemManagerClient):
+    for outbox_id, number, text in get_queued_sms():
+        normalized_number = normalize_number(number)
+        body = (text or "").strip()
+
+        if not normalized_number:
+            mark_outbox(outbox_id, "FAILED", "Invalid phone number")
+            continue
+        if not body:
+            mark_outbox(outbox_id, "FAILED", "Message body is empty")
+            continue
+
+        try:
+            print(f"📤 Tạo SMS cho {normalized_number}")
+            mark_outbox(outbox_id, "PROCESSING")
+            modem_sms_id = client.create_sms(normalized_number, body)
+            print(f"📨 ModemManager SMS ID: {modem_sms_id}")
+            response = client.send_sms(modem_sms_id)
+            mark_outbox(outbox_id, "SENT", response[:200], modem_sms_id=modem_sms_id)
+            print(f"✅ SMS sent successfully: {response}")
+        except MmcliError as exc:
+            error_message = str(exc).replace("\n", " ")[:200]
+            mark_outbox(outbox_id, "FAILED", error_message)
+            print(f"❌ SMS send failed: {error_message}")
+
+
+def import_inbox(client: ModemManagerClient):
+    for entry in client.list_sms():
+        sms_id = entry["id"]
+        state = entry["state"].lower()
+        if state != "received":
+            continue
+        if sms_ref_exists("IN", sms_id):
+            continue
+
+        try:
+            details = client.get_sms(sms_id)
+        except MmcliError as exc:
+            print(f"⚠️ Không đọc được SMS {sms_id}: {exc}")
+            continue
+
+        number = details.get("number", "Unknown")
+        text = details.get("text", "")
+        print(f"📩 Imported SMS #{sms_id} from {number}")
+        save_sms("IN", number, text, "RECEIVED", ref=sms_id)
+
+        try:
+            requests.post(WEBHOOK_URL, json={"from": number, "text": text, "sms_id": sms_id}, timeout=2)
+        except Exception as exc:
+            print(f"⚠️ Webhook error: {exc}")
+
+        if DELETE_IMPORTED_SMS:
+            try:
+                client.delete_sms(sms_id)
+                print(f"🗑️ Deleted SMS #{sms_id} from modem storage")
+            except MmcliError as exc:
+                print(f"⚠️ Không xóa được SMS {sms_id}: {exc}")
+
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals gracefully"""
     print("\n🛑 Shutting down...")
-    gps_reader.stop()
     sys.exit(0)
 
+
+def init_modem(client: ModemManagerClient):
+    info = client.modem_info()
+    if "state:" not in info.lower():
+        raise MmcliError("ModemManager không trả về trạng thái modem hợp lệ")
+    print(f"✅ ModemManager ready for modem {MODEM_ID}")
+
+
 def main():
-    """Main listener loop"""
-    # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Initialize database
+
     init_db()
-    
-    # Start GPS reader
-    gps_reader.start()
-    
-    # Open serial port for AT commands
-    ser = None
+    client = ModemManagerClient()
+
     try:
-        ser = serial.Serial(AT_PORT, BAUD, timeout=1)
-        print(f"✅ AT port opened: {AT_PORT}")
-    except serial.SerialException as e:
-        print(f"❌ Failed to open AT port {AT_PORT}: {e}")
-        print("   Make sure the device is connected and permissions are correct")
-        gps_reader.stop()
-        sys.exit(1)
-    
-    # Initialize modem
-    if not init_modem(ser):
-        print("❌ Failed to initialize modem")
-        ser.close()
-        gps_reader.stop()
+        init_modem(client)
+    except MmcliError as exc:
+        print(f"❌ Failed to initialize ModemManager: {exc}")
         sys.exit(1)
 
-    print("📡 Listener running")
-    
-    last_gps_save = 0
-    
+    print("📡 Listener running via ModemManager")
+
     try:
         while True:
-            # ===== OUTBOX =====
             try:
-                for id, number, text in get_queued_sms():
-                    print(f"📤 Sending SMS to {number}")
-                    resp = send_sms(ser, number, text)
+                send_outbox_messages(client)
+            except Exception as exc:
+                print(f"⚠️ Error processing outbox: {exc}")
 
-                    if "OK" in resp:
-                        mark_outbox(id, "SENT")
-                        save_sms("OUT", number, text, "SENT")
-                        print(f"✅ SMS sent successfully")
-                    else:
-                        mark_outbox(id, "FAILED")
-                        save_sms("OUT", number, text, "FAILED")
-                        print(f"❌ SMS send failed: {resp[:100]}")
-            except Exception as e:
-                print(f"⚠️ Error processing outbox: {e}")
-
-            # ===== INCOMING SMS =====
             try:
-                line = ser.readline().decode(errors="ignore").strip()
+                import_inbox(client)
+            except Exception as exc:
+                print(f"⚠️ Error importing inbox: {exc}")
 
-                if line.startswith("+CMT:"):
-                    header = line
-                    text = ser.readline().decode(errors="ignore").strip()
-                    number = header.split(",")[1].replace('"', '')
-
-                    print(f"📩 SMS from {number}: {text}")
-                    save_sms("IN", number, text)
-
-                    # Send webhook notification
-                    try:
-                        requests.post(
-                            WEBHOOK_URL,
-                            json={"from": number, "text": text},
-                            timeout=2
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Webhook error: {e}")
-
-                elif line.startswith("+CDS"):
-                    handle_delivery(line)
-            except serial.SerialException as e:
-                print(f"⚠️ Serial read error: {e}")
-                time.sleep(1)
-            except Exception as e:
-                print(f"⚠️ Error processing incoming SMS: {e}")
-
-            # ===== GPS POSITION SAVE =====
-            # Save GPS position periodically
-            current_time = time.time()
-            if current_time - last_gps_save >= GPS_UPDATE_INTERVAL:
-                if gps_reader.has_fix():
-                    pos = gps_reader.get_position()
-                    save_gps_position(pos['latitude'], pos['longitude'], 
-                                     pos['altitude'], pos['speed'], 
-                                     pos['satellites'])
-                    last_gps_save = current_time
-
-            time.sleep(0.2)
-            
+            time.sleep(MODEM_POLL_INTERVAL)
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+    except Exception as exc:
+        print(f"❌ Fatal error: {exc}")
     finally:
-        if ser:
-            ser.close()
-        gps_reader.stop()
         print("👋 Listener stopped")
+
 
 if __name__ == "__main__":
     main()
