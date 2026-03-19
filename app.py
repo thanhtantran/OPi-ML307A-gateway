@@ -1,9 +1,10 @@
+import subprocess
 import time
 
 import streamlit as st
 
-from config import DELETE_IMPORTED_SMS, MODEM_ID
-from sms_db import init_db, list_outbox, list_sms, queue_sms
+from config import DELETE_IMPORTED_SMS, MMCLI_BIN, MODEM_ID
+from sms_db import delete_sms_by_id, init_db, list_outbox, list_sms, queue_sms
 
 st.set_page_config(layout="wide", page_title="OPi-ML307A SMS Gateway")
 st.title("📡 OPi-ML307A SMS Gateway")
@@ -69,29 +70,68 @@ with col2:
 
     with tab1:
         if inbox:
+            selected_ids = []
             for sms in inbox[:20]:
-                with st.container():
-                    st.markdown(f"**{sms[2]}** - {sms[6]}")
-                    if sms[5] is not None:
-                        st.caption(f"ModemManager SMS ID: {sms[5]}")
-                    st.text(sms[3])
-                    if sms[4]:
-                        st.caption(f"Trạng thái: {sms[4]}")
-                    st.divider()
+                sms_db_id, direction, number, text, status, ref, ts = sms
+                col_check, col_content = st.columns([0.05, 0.95])
+                with col_check:
+                    checked = st.checkbox("", key=f"inbox_{sms_db_id}")
+                    if checked:
+                        selected_ids.append((sms_db_id, ref))
+                with col_content:
+                    st.markdown(f"**{number}** - {ts}")
+                    if ref is not None:
+                        st.caption(f"ModemManager SMS ID: {ref}")
+                    st.text(text)
+                    if status:
+                        st.caption(f"Trạng thái: {status}")
+                st.divider()
+
+            if selected_ids:
+                if st.button(f"🗑️ Xóa {len(selected_ids)} SMS đã chọn", type="primary"):
+                    errors = []
+                    for db_id, modem_ref in selected_ids:
+                        if modem_ref is not None:
+                            result = subprocess.run(
+                                ["sudo", MMCLI_BIN, "-s", str(modem_ref), "--delete"],
+                                capture_output=True, text=True
+                            )
+                            if result.returncode != 0:
+                                errors.append(f"SMS #{modem_ref}: {(result.stderr or result.stdout).strip()}")
+                        delete_sms_by_id(db_id)
+                    if errors:
+                        st.warning("Một số SMS không xóa được trên modem:\n" + "\n".join(errors))
+                    else:
+                        st.success("Đã xóa thành công")
+                    st.rerun()
         else:
             st.info("Chưa có tin nhắn nào")
 
     with tab2:
         if sent_log:
+            selected_sent_ids = []
             for sms in sent_log[:20]:
-                with st.container():
-                    st.markdown(f"**{sms[2]}** - {sms[6]}")
-                    if sms[5] is not None:
-                        st.caption(f"Outbox ref: {sms[5]}")
-                    st.text(sms[3])
-                    if sms[4]:
-                        st.caption(f"Trạng thái: {sms[4]}")
-                    st.divider()
+                sms_db_id, direction, number, text, status, ref, ts = sms
+                col_check, col_content = st.columns([0.05, 0.95])
+                with col_check:
+                    checked = st.checkbox("", key=f"sent_{sms_db_id}")
+                    if checked:
+                        selected_sent_ids.append(sms_db_id)
+                with col_content:
+                    st.markdown(f"**{number}** - {ts}")
+                    if ref is not None:
+                        st.caption(f"Outbox ref: {ref}")
+                    st.text(text)
+                    if status:
+                        st.caption(f"Trạng thái: {status}")
+                st.divider()
+
+            if selected_sent_ids:
+                if st.button(f"🗑️ Xóa {len(selected_sent_ids)} SMS đã chọn", key="del_sent", type="primary"):
+                    for db_id in selected_sent_ids:
+                        delete_sms_by_id(db_id)
+                    st.success("Đã xóa thành công")
+                    st.rerun()
         else:
             st.info("Chưa có lịch sử gửi")
 

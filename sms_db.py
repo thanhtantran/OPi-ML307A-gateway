@@ -127,6 +127,14 @@ def list_sms(limit=50):
     return rows
 
 
+def delete_sms_by_id(sms_id: int):
+    con = conn()
+    cur = con.cursor()
+    cur.execute("DELETE FROM sms WHERE id=?", (sms_id,))
+    con.commit()
+    con.close()
+
+
 def list_outbox(limit=50):
     con = conn()
     cur = con.cursor()
