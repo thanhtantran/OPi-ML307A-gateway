@@ -60,16 +60,10 @@ mmcli -L
 
 4. Khởi động listener service:
 ```bash
-
 sudo cp ml307a-listener.service /etc/systemd/system/
 sudo systemctl enable ml307a-listener.service
 sudo systemctl restart ml307a-listener.service
 sudo systemctl status ml307a-listener.service
-
-ls -l /dev/ml307*
-# Kết quả:
-# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-at -> ttyUSB1
-
 ```
 
 5. Chạy Streamlit web interface:
@@ -78,13 +72,6 @@ streamlit run app.py
 ```
 
 ## Cấu trúc mã nguồn
-=======
-2. Cấu hình (tùy chọn):
-Chỉnh sửa `config.py` nếu cần thay đổi:
-- Port AT (mặc định: `/dev/ml307-at`)
-- Baud rate (mặc định: 115200)
-- Webhook URL
-- Timeout gửi SMS
 
 - `config.py` - Cấu hình database và ModemManager/mmcli
 - `listener.py` - Đồng bộ outbox/inbox qua `mmcli`
