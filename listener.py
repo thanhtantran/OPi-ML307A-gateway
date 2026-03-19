@@ -165,10 +165,11 @@ def import_inbox(client: ModemManagerClient):
         print(f"📩 Imported SMS #{sms_id} from {number}")
         save_sms("IN", number, text, "RECEIVED", ref=sms_id)
 
-        try:
-            requests.post(WEBHOOK_URL, json={"from": number, "text": text, "sms_id": sms_id}, timeout=2)
-        except Exception as exc:
-            print(f"⚠️ Webhook error: {exc}")
+        if WEBHOOK_URL:
+            try:
+                requests.post(WEBHOOK_URL, json={"from": number, "text": text, "sms_id": sms_id}, timeout=2)
+            except Exception as exc:
+                print(f"⚠️ Webhook error: {exc}")
 
         if DELETE_IMPORTED_SMS:
             try:

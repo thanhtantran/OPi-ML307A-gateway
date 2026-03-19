@@ -1,2 +1,4 @@
 streamlit
 requests
+urllib3<2
+chardet<5
