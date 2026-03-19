@@ -70,12 +70,14 @@ with col2:
 
     with tab1:
         if inbox:
+            select_all_inbox = st.checkbox("Chọn tất cả", key="select_all_inbox")
             selected_ids = []
             for sms in inbox[:20]:
                 sms_db_id, direction, number, text, status, ref, ts = sms
+                default = select_all_inbox
                 col_check, col_content = st.columns([0.05, 0.95])
                 with col_check:
-                    checked = st.checkbox("", key=f"inbox_{sms_db_id}")
+                    checked = st.checkbox("Chọn", value=default, key=f"inbox_{sms_db_id}", label_visibility="collapsed")
                     if checked:
                         selected_ids.append((sms_db_id, ref))
                 with col_content:
@@ -88,7 +90,7 @@ with col2:
                 st.divider()
 
             if selected_ids:
-                if st.button(f"🗑️ Xóa {len(selected_ids)} SMS đã chọn", type="primary"):
+                if st.button(f"🗑️ Xóa {len(selected_ids)} SMS đã chọn", key="del_inbox", type="primary"):
                     errors = []
                     for db_id, modem_ref in selected_ids:
                         if modem_ref is not None:
@@ -109,12 +111,14 @@ with col2:
 
     with tab2:
         if sent_log:
+            select_all_sent = st.checkbox("Chọn tất cả", key="select_all_sent")
             selected_sent_ids = []
             for sms in sent_log[:20]:
                 sms_db_id, direction, number, text, status, ref, ts = sms
+                default = select_all_sent
                 col_check, col_content = st.columns([0.05, 0.95])
                 with col_check:
-                    checked = st.checkbox("", key=f"sent_{sms_db_id}")
+                    checked = st.checkbox("Chọn", value=default, key=f"sent_{sms_db_id}", label_visibility="collapsed")
                     if checked:
                         selected_sent_ids.append(sms_db_id)
                 with col_content:
