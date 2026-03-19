@@ -204,10 +204,20 @@ def main():
         sys.exit(1)
 
     print("📡 Listener running via ModemManager")
+    client = ModemManagerClient()
+
+    try:
+        init_modem(client)
+    except MmcliError as exc:
+        print(f"❌ Failed to initialize ModemManager: {exc}")
+        sys.exit(1)
+
+    print("📡 Listener running via ModemManager")
 
     try:
         while True:
             try:
+                send_outbox_messages(client)
                 send_outbox_messages(client)
             except Exception as exc:
                 print(f"⚠️ Error processing outbox: {exc}")
@@ -218,11 +228,12 @@ def main():
                 print(f"⚠️ Error importing inbox: {exc}")
 
             time.sleep(MODEM_POLL_INTERVAL)
+
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user")
     except Exception as exc:
         print(f"❌ Fatal error: {exc}")
-    finally:
+    finally
         print("👋 Listener stopped")
 
 
