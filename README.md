@@ -4,10 +4,17 @@ Gateway SMS sử dụng chip ML307A trên Orange Pi
 
 ## Tính năng
 
+<<<<<<< codex/remove-gps-features-from-code
+- ✅ Gửi SMS qua ModemManager (`mmcli`)
+- ✅ Đồng bộ SMS nhận được từ ModemManager vào SQLite
+- ✅ Giao diện Streamlit để đưa tin nhắn vào hàng đợi
+- ✅ Theo dõi trạng thái gửi: chờ gửi / đang gửi / thành công / lỗi
+=======
 - ✅ Gửi/nhận SMS qua ML307A
 - ✅ Giao diện Streamlit để đưa tin nhắn vào hàng đợi
 - ✅ Theo dõi trạng thái gửi: chờ gửi / đang gửi / thành công / lỗi
 - ✅ Lưu lịch sử SMS gửi/nhận vào SQLite
+>>>>>>> main
 - ✅ Webhook notification cho SMS đến
 
 ## Cài đặt phần cứng
@@ -38,25 +45,6 @@ ENV{DEVPATH}=="*/3-1:1.1/*", \
 SYMLINK+="ml307-at", MODE="0660", GROUP="dialout"
 ```
 
-Reload và apply:
-
-```bash
-sudo udevadm control --reload
-sudo udevadm trigger --subsystem-match=tty
-```
-
-Hoặc reboot:
-```bash
-sudo reboot
-```
-
-Kiểm tra:
-```bash
-ls -l /dev/ml307*
-# Kết quả:
-# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-at -> ttyUSB1
-```
-
 ## Cài đặt phần mềm
 
 1. Cài đặt dependencies:
@@ -64,46 +52,103 @@ ls -l /dev/ml307*
 pip install -r requirements.txt
 ```
 
+2. Bảo đảm ModemManager đang chạy:
+```bash
+sudo systemctl enable ModemManager
+sudo systemctl restart ModemManager
+mmcli -L
+```
+
+3. Chỉnh sửa `config.py` nếu cần thay đổi:
+- `MODEM_ID` - modem index trong `mmcli -L`
+- `MODEM_POLL_INTERVAL` - chu kỳ đồng bộ gửi/nhận SMS
+- `DELETE_IMPORTED_SMS` - có xóa SMS received khỏi modem sau khi import hay không
+- `WEBHOOK_URL` - nơi nhận webhook cho SMS đến
+
+4. Khởi động listener service:
+```bash
+<<<<<<< codex/remove-gps-features-from-code
+sudo cp ml307a-listener.service /etc/systemd/system/
+sudo systemctl enable ml307a-listener.service
+sudo systemctl restart ml307a-listener.service
+sudo systemctl status ml307a-listener.service
+=======
+ls -l /dev/ml307*
+# Kết quả:
+# lrwxrwxrwx 1 root root 7 Jan 27 11:30 /dev/ml307-at -> ttyUSB1
+>>>>>>> main
+```
+
+5. Chạy Streamlit web interface:
+```bash
+streamlit run app.py
+```
+
+<<<<<<< codex/remove-gps-features-from-code
+## Cấu trúc mã nguồn
+=======
 2. Cấu hình (tùy chọn):
 Chỉnh sửa `config.py` nếu cần thay đổi:
 - Port AT (mặc định: `/dev/ml307-at`)
 - Baud rate (mặc định: 115200)
 - Webhook URL
 - Timeout gửi SMS
+>>>>>>> main
 
-3. Khởi động listener service:
+- `config.py` - Cấu hình database và ModemManager/mmcli
+- `listener.py` - Đồng bộ outbox/inbox qua `mmcli`
+- `sms_db.py` - Database operations cho SMS và hàng đợi gửi
+- `app.py` - Streamlit web interface
+- `ml307a-listener.service` - Systemd service file
+
+## Luồng SMS dùng trong mã nguồn
+
+### Gửi SMS
+Mã nguồn listener dùng đúng luồng ModemManager được khuyến nghị:
+
 ```bash
-# Copy service file
-sudo cp ml307a-listener.service /etc/systemd/system/
-
-# Chỉnh sửa đường dẫn trong service file nếu cần
-sudo nano /etc/systemd/system/ml307a-listener.service
-
-# Enable và start service
-sudo systemctl enable ml307a-listener.service
-sudo systemctl start ml307a-listener.service
-
-# Kiểm tra status
-sudo systemctl status ml307a-listener.service
+sudo mmcli -m 0 --messaging-create-sms="text='Xin chào từ ML307A',number='+849xxxxxxxx'"
+sudo mmcli -s <sms_id> --send
 ```
 
-4. Chạy Streamlit web interface:
+Trong source:
+- `queue_sms()` ghi yêu cầu gửi vào SQLite
+- `listener.py` gọi `mmcli -m <MODEM_ID> --messaging-create-sms=...`
+- lấy `SMS/<id>` vừa tạo
+- gọi tiếp `mmcli -s <id> --send`
+- cập nhật trạng thái `SENT` hoặc `FAILED` cùng phản hồi mmcli
+
+### Nhận & đọc SMS
+Listener đồng bộ inbox bằng:
+
 ```bash
-streamlit run app.py
+sudo mmcli -m 0 --messaging-list-sms
+sudo mmcli -s <sms_id>
 ```
 
-Truy cập web interface tại: `http://localhost:8501`
+Chỉ các SMS ở trạng thái `received` mới được import vào SQLite để tránh nhập lại các SMS do chính hệ thống vừa tạo để gửi.
 
-## Cấu trúc mã nguồn
+### Xóa SMS
+Nếu muốn tự động xóa SMS đã import khỏi modem, đặt:
 
+<<<<<<< codex/remove-gps-features-from-code
+```python
+DELETE_IMPORTED_SMS = True
+```
+=======
 - `config.py` - Cấu hình serial port, timeout, database
 - `listener.py` - Service chính xử lý SMS
 - `sms_db.py` - Database operations cho SMS và hàng đợi gửi
 - `app.py` - Streamlit web interface
 - `ml307a-listener.service` - Systemd service file
+>>>>>>> main
 
-## Sử dụng
+Khi đó listener sẽ gọi:
 
+<<<<<<< codex/remove-gps-features-from-code
+```bash
+sudo mmcli -s <sms_id> --delete
+=======
 ### Gửi SMS
 - Mở web interface Streamlit
 - Nhập số điện thoại và nội dung tin nhắn
@@ -117,10 +162,28 @@ Khi có SMS đến, hệ thống sẽ POST đến `WEBHOOK_URL` với format:
   "from": "+84901234567",
   "text": "Nội dung tin nhắn"
 }
+>>>>>>> main
 ```
 
 ## Database
 
+<<<<<<< codex/remove-gps-features-from-code
+SQLite database (`sms.db`) chứa 2 bảng chính:
+- `sms` - lịch sử SMS gửi/nhận
+- `outbox` - hàng đợi gửi, phản hồi lỗi và `modem_sms_id`
+
+## Troubleshooting
+
+- **Không gửi được SMS**:
+  - chạy thử tay: `mmcli -m 0 --messaging-create-sms=...` rồi `mmcli -s <id> --send`
+  - kiểm tra modem có xuất hiện trong `mmcli -L` hay không
+  - kiểm tra service `ModemManager` đang chạy
+  - xem cột lỗi trong giao diện web hoặc journal của `ml307a-listener.service`
+- **Không thấy SMS đến**:
+  - kiểm tra `mmcli -m 0 --messaging-list-sms`
+  - bảo đảm `MODEM_ID` đúng modem đang dùng
+  - nếu muốn dọn sạch hộp thư sau khi import, bật `DELETE_IMPORTED_SMS = True`
+=======
 SQLite database (`sms.db`) chứa 2 bảng chính được dùng bởi ứng dụng:
 - `sms` - Lịch sử SMS đã gửi/nhận
 - `outbox` - Hàng đợi SMS cần gửi và lỗi modem gần nhất
@@ -132,3 +195,4 @@ SQLite database (`sms.db`) chứa 2 bảng chính được dùng bởi ứng d�
   - Kiểm tra SIM card, tín hiệu mạng và trạng thái đăng ký mạng (`AT+CREG?`, `AT+CSQ`)
   - Mở giao diện web để xem lỗi modem được lưu trong hàng đợi
   - Nếu nội dung có dấu tiếng Việt, thử gửi không dấu trước để xác nhận modem đang hoạt động ở chế độ text mode
+>>>>>>> main

@@ -2,6 +2,7 @@ import time
 
 import streamlit as st
 
+from config import DELETE_IMPORTED_SMS, MODEM_ID
 from sms_db import init_db, list_outbox, list_sms, queue_sms
 
 st.set_page_config(layout="wide", page_title="OPi-ML307A SMS Gateway")
@@ -21,7 +22,8 @@ with st.sidebar:
         else:
             st.error("⚠️ Vui lòng nhập số điện thoại và nội dung")
 
-st.caption("ML307 không hỗ trợ GPS trong dự án này. Giao diện chỉ giữ lại chức năng SMS.")
+st.caption("ML307 không hỗ trợ GPS trong dự án này. Ứng dụng SMS hiện dùng ModemManager/mmcli thay cho gửi AT trực tiếp.")
+st.caption(f"Modem đang cấu hình: modem #{MODEM_ID}. Tự động xóa SMS sau khi import: {'Có' if DELETE_IMPORTED_SMS else 'Không'}.")
 
 summary_col1, summary_col2, summary_col3 = st.columns(3)
 outbox_rows = list_outbox(limit=100)
@@ -43,15 +45,17 @@ with col1:
             "FAILED": "❌",
         }
         for row in outbox_rows[:30]:
-            outbox_id, phone, body, status, error, created_at, updated_at = row
+            outbox_id, phone, body, status, error, modem_sms_id, created_at, updated_at = row
             with st.container():
                 st.markdown(
                     f"{status_icon.get(status, '📨')} **#{outbox_id} · {phone}**"
                     f"  \\nTạo lúc: {created_at} · Cập nhật: {updated_at}"
                 )
                 st.text(body)
+                if modem_sms_id is not None:
+                    st.caption(f"ModemManager SMS ID: {modem_sms_id}")
                 if error:
-                    st.caption(f"Lỗi modem: {error}")
+                    st.caption(f"Phản hồi mmcli/modem: {error}")
                 st.divider()
     else:
         st.info("Chưa có tin nhắn nào trong hàng đợi")
@@ -68,7 +72,11 @@ with col2:
             for sms in inbox[:20]:
                 with st.container():
                     st.markdown(f"**{sms[2]}** - {sms[6]}")
+                    if sms[5] is not None:
+                        st.caption(f"ModemManager SMS ID: {sms[5]}")
                     st.text(sms[3])
+                    if sms[4]:
+                        st.caption(f"Trạng thái: {sms[4]}")
                     st.divider()
         else:
             st.info("Chưa có tin nhắn nào")
@@ -78,6 +86,8 @@ with col2:
             for sms in sent_log[:20]:
                 with st.container():
                     st.markdown(f"**{sms[2]}** - {sms[6]}")
+                    if sms[5] is not None:
+                        st.caption(f"Outbox ref: {sms[5]}")
                     st.text(sms[3])
                     if sms[4]:
                         st.caption(f"Trạng thái: {sms[4]}")
@@ -85,7 +95,6 @@ with col2:
         else:
             st.info("Chưa có lịch sử gửi")
 
-# Auto refresh
 start = time.time()
 while time.time() - start < 2:
     time.sleep(0.1)
