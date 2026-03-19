@@ -39,7 +39,7 @@ def init_db():
     if "error" not in columns:
         cur.execute("ALTER TABLE outbox ADD COLUMN error TEXT")
     if "updated_at" not in columns:
-        cur.execute("ALTER TABLE outbox ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+        cur.execute("ALTER TABLE outbox ADD COLUMN updated_at DATETIME")
 
     con.commit()
     con.close()
