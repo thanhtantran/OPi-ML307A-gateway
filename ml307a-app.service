@@ -1,0 +1,14 @@
+[Unit]
+Description=ML307A SMS Gateway Web App
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/OPi-ML307A-gateway
+ExecStart=/usr/bin/python3 /home/admin/OPi-ML307A-gateway/app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
