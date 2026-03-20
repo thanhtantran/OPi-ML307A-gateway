@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OPi-ML307A SMS Gateway</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #f4f4f4; color: #222; }
+    header { background: #1a1a2e; color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1.2rem; }
+    .badge { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; }
+    .badge.ok { background: #2ecc71; color: #fff; }
+    .badge.err { background: #e74c3c; color: #fff; }
+    .container { max-width: 1200px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+    .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+    .card h2 { font-size: 1rem; margin-bottom: 12px; color: #444; }
+    .stats { display: flex; gap: 12px; margin-bottom: 20px; }
+    .stat { flex: 1; background: #fff; border-radius: 8px; padding: 14px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+    .stat .num { font-size: 2rem; font-weight: bold; }
+    .stat .label { font-size: 0.75rem; color: #888; margin-top: 4px; }
+    .stat.queue .num { color: #f39c12; }
+    .stat.sent .num { color: #2ecc71; }
+    .stat.failed .num { color: #e74c3c; }
+    input[type=text], textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; margin-bottom: 10px; }
+    textarea { resize: vertical; min-height: 80px; }
+    button, .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .btn-primary { background: #1a1a2e; color: #fff; width: 100%; }
+    .btn-primary:hover { background: #2d2d5e; }
+    .btn-danger { background: #e74c3c; color: #fff; }
+    .btn-danger:hover { background: #c0392b; }
+    .btn-send { background: #2ecc71; color: #fff; padding: 4px 10px; font-size: 0.8rem; }
+    .btn-send:hover { background: #27ae60; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+    .tab-btn { padding: 6px 14px; border: 1px solid #ddd; border-radius: 6px; background: #f4f4f4; cursor: pointer; font-size: 0.85rem; }
+    .tab-btn.active { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .sms-item { border-bottom: 1px solid #eee; padding: 10px 0; display: flex; gap: 10px; align-items: flex-start; }
+    .sms-item:last-child { border-bottom: none; }
+    .sms-meta { font-size: 0.8rem; color: #888; margin-top: 2px; }
+    .sms-text { margin-top: 4px; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; }
+    .status { display: inline-block; font-size: 0.75rem; padding: 2px 7px; border-radius: 10px; }
+    .status.QUEUE, .status.QUEUED { background: #fef3cd; color: #856404; }
+    .status.PROCESSING { background: #cfe2ff; color: #084298; }
+    .status.SENT { background: #d1e7dd; color: #0a3622; }
+    .status.FAILED { background: #f8d7da; color: #842029; }
+    .status.RECEIVED { background: #d1e7dd; color: #0a3622; }
+    .error-msg { font-size: 0.78rem; color: #e74c3c; margin-top: 4px; }
+    .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9rem; }
+    .alert.error { background: #f8d7da; color: #842029; }
+    .delete-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .caption { font-size: 0.75rem; color: #888; margin-top: 12px; }
+    @media (max-width: 768px) { .container { grid-template-columns: 1fr; } .stats { flex-direction: column; } }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📡 OPi-ML307A SMS Gateway</h1>
+  {% if modem.started %}
+    <span class="badge ok">Modem OK</span>
+  {% else %}
+    <span class="badge err">Modem lỗi</span>
+  {% endif %}
+</header>
+
+<div class="container">
+
+  <!-- LEFT: Send form -->
+  <div>
+    <div class="card">
+      <h2>✉️ Gửi SMS</h2>
+      {% if modem.error %}
+        <div class="alert error">❌ {{ modem.error }}</div>
+      {% endif %}
+      <form method="POST" action="/send">
+        <input type="text" name="number" placeholder="+84901234567" required>
+        <textarea name="text" placeholder="Nội dung tin nhắn..." required></textarea>
+        <button type="submit" class="btn btn-primary">📤 Gửi SMS</button>
+      </form>
+    </div>
+    <p class="caption">Cổng: {{ serial_port }} · Tự động xóa: {{ 'Có' if auto_delete else 'Không' }}</p>
+  </div>
+
+  <!-- RIGHT: Stats + tables -->
+  <div>
+    <div class="stats">
+      <div class="stat queue">
+        <div class="num">{{ stats.queue }}</div>
+        <div class="label">Chờ gửi</div>
+      </div>
+      <div class="stat sent">
+        <div class="num">{{ stats.sent }}</div>
+        <div class="label">Đã gửi</div>
+      </div>
+      <div class="stat failed">
+        <div class="num">{{ stats.failed }}</div>
+        <div class="label">Lỗi</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('outbox', this)">📤 Hàng đợi gửi</button>
+        <button class="tab-btn" onclick="switchTab('inbox', this)">📩 Đã nhận</button>
+        <button class="tab-btn" onclick="switchTab('sent', this)">✅ Đã gửi</button>
+      </div>
+
+      <!-- OUTBOX -->
+      <div id="tab-outbox" class="tab-content active">
+        {% if outbox %}
+          {% for row in outbox %}
+          {% set oid, phone, body, status, error, modem_sms_id, created_at, updated_at = row %}
+          <div class="sms-item">
+            <div style="flex:1">
+              <div>
+                <strong>{{ phone }}</strong>
+                <span class="status {{ status }}">{{ status }}</span>
+              </div>
+              <div class="sms-meta">#{{ oid }} · {{ created_at }} → {{ updated_at }}</div>
+              <div class="sms-text">{{ body }}</div>
+              {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+            </div>
+            {% if status in ('FAILED', 'QUEUE') %}
+            <form method="POST" action="/resend/{{ oid }}">
+              <button type="submit" class="btn btn-send">🔄 Gửi lại</button>
+            </form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+          <p style="color:#888;font-size:.9rem">Chưa có tin nhắn nào</p>
+        {% endif %}
+      </div>
+
+      <!-- INBOX -->
+      <div id="tab-inbox" class="tab-content">
+        {% if inbox %}
+        <form method="POST" action="/delete_sms">
+          <div class="delete-bar">
+            <label><input type="checkbox" id="chk-all-inbox" onchange="toggleAll('inbox', this.checked)"> Chọn tất cả</label>
+            <button type="submit" class="btn btn-danger">🗑️ Xóa đã chọn</button>
+          </div>
+          {% for sms in inbox %}
+          {% set sid, direction, number, text, status, ref, ts = sms %}
+          <div class="sms-item">
+            <input type="checkbox" name="sms_ids" value="{{ sid }}" class="chk-inbox">
+            <div>
+              <div><strong>{{ number }}</strong> <span class="status {{ status }}">{{ status }}</span></div>
+              <div class="sms-meta">{{ ts }}{% if ref is not none %} · Modem index: {{ ref }}{% endif %}</div>
+              <div class="sms-text">{{ text }}</div>
+            </div>
+          </div>
+          {% endfor %}
+          <div class="delete-bar" style="margin-top:10px;margin-bottom:0">
+            <button type="submit" class="btn btn-danger">🗑️ Xóa đã chọn</button>
+          </div>
+        </form>
+        {% else %}
+          <p style="color:#888;font-size:.9rem">Chưa có tin nhắn nào</p>
+        {% endif %}
+      </div>
+
+      <!-- SENT LOG -->
+      <div id="tab-sent" class="tab-content">
+        {% if sent_log %}
+        <form method="POST" action="/delete_sms">
+          <div class="delete-bar">
+            <label><input type="checkbox" id="chk-all-sent" onchange="toggleAll('sent', this.checked)"> Chọn tất cả</label>
+            <button type="submit" class="btn btn-danger">🗑️ Xóa đã chọn</button>
+          </div>
+          {% for sms in sent_log %}
+          {% set sid, direction, number, text, status, ref, ts = sms %}
+          <div class="sms-item">
+            <input type="checkbox" name="sms_ids" value="{{ sid }}" class="chk-sent">
+            <div>
+              <div><strong>{{ number }}</strong> <span class="status {{ status }}">{{ status }}</span></div>
+              <div class="sms-meta">{{ ts }}{% if ref is not none %} · Outbox ref: {{ ref }}{% endif %}</div>
+              <div class="sms-text">{{ text }}</div>
+            </div>
+          </div>
+          {% endfor %}
+          <div class="delete-bar" style="margin-top:10px;margin-bottom:0">
+            <button type="submit" class="btn btn-danger">🗑️ Xóa đã chọn</button>
+          </div>
+        </form>
+        {% else %}
+          <p style="color:#888;font-size:.9rem">Chưa có lịch sử gửi</p>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  function toggleAll(group, checked) {
+    document.querySelectorAll('.chk-' + group).forEach(el => el.checked = checked);
+  }
+
+  // Auto-refresh every 5s
+  setTimeout(() => location.reload(), 5000);
+</script>
+
+</body>
+</html>
