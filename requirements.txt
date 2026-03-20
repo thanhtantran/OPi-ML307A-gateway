@@ -1,4 +1,5 @@
 streamlit
 requests
+pyserial
 urllib3<2
 chardet<5
