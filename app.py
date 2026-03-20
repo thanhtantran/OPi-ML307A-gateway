@@ -15,14 +15,14 @@ init_db()
 
 # Start listener threads once per Streamlit session
 if "listener_started" not in st.session_state:
+    st.session_state["listener_started"] = False
+    st.session_state["modem_error"] = None
     try:
         modem = ML307(port=SERIAL_PORT, baud=SERIAL_BAUD)
         modem.init()
         start_listener(modem)
         st.session_state["listener_started"] = True
-        st.session_state["modem_error"] = None
     except ML307Error as e:
-        st.session_state["listener_started"] = False
         st.session_state["modem_error"] = str(e)
 
 if st.session_state.get("modem_error"):

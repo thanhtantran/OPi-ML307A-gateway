@@ -1,6 +1,7 @@
 import re
 import time
 import serial
+from config import DELETE_IMPORTED_SMS, SERIAL_PORT, SERIAL_BAUD
 
 
 class ML307Error(RuntimeError):
@@ -8,7 +9,7 @@ class ML307Error(RuntimeError):
 
 
 class ML307:
-    def __init__(self, port="/dev/ml307-at", baud=115200, timeout=1):
+    def __init__(self, port=SERIAL_PORT, baud=SERIAL_BAUD, timeout=1):
         try:
             self.ser = serial.Serial(port, baud, timeout=timeout)
         except serial.SerialException as e:
@@ -18,7 +19,7 @@ class ML307:
         if self.ser and self.ser.is_open:
             self.ser.close()
 
-    def send_at(self, cmd: str, wait=0.5) -> str:
+    def send_at(self, cmd: str, wait=1.0) -> str:
         self.ser.reset_input_buffer()
         self.ser.write((cmd + "\r").encode())
         time.sleep(wait)
@@ -26,9 +27,15 @@ class ML307:
 
     # ===== INIT =====
     def init(self):
-        resp = self.send_at("AT")
-        if "OK" not in resp:
-            raise ML307Error("Modem không phản hồi AT")
+        # Retry a few times - modem may need time to wake up
+        for attempt in range(5):
+            resp = self.send_at("AT", wait=1.0)
+            if "OK" in resp:
+                break
+            print(f"⏳ AT attempt {attempt + 1}/5: {repr(resp)}")
+            time.sleep(1)
+        else:
+            raise ML307Error(f"Modem không phản hồi AT sau 5 lần thử (nhận được: {repr(resp)})")
         self.send_at("AT+CMGF=1")          # text mode
         self.send_at('AT+CSCS="GSM"')      # GSM charset
         self.send_at("AT+CNMI=2,2,0,0,0")  # push SMS realtime via +CMT
