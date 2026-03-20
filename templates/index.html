@@ -58,11 +58,7 @@
 
 <header>
   <h1>📡 OPi-ML307A SMS Gateway</h1>
-  {% if modem.started %}
-    <span class="badge ok">Modem OK</span>
-  {% else %}
-    <span class="badge err">Modem lỗi</span>
-  {% endif %}
+  <span class="badge ok">{{ serial_port }}</span>
 </header>
 
 <div class="container">
@@ -71,9 +67,6 @@
   <div>
     <div class="card">
       <h2>✉️ Gửi SMS</h2>
-      {% if modem.error %}
-        <div class="alert error">❌ {{ modem.error }}</div>
-      {% endif %}
       <form method="POST" action="/send">
         <input type="text" name="number" placeholder="+84901234567" required>
         <textarea name="text" placeholder="Nội dung tin nhắn..." required></textarea>
